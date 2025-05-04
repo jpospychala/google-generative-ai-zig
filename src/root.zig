@@ -60,10 +60,25 @@ pub const ChatSession = struct {
 
         try self.chatHistory.append(userContent);
 
-        const reply = try google_api_call(self.allocator, self.chatHistory.items, self.model.ai.key);
+        const req = GenerateContentRequest{
+            .safetySettings = &[_][]u8{},
+            .generationConfig = .{},
+            .contents = self.chatHistory.items,
+        };
 
-        try self.chatHistory.append(reply);
-        return reply.parts[0].text;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const reply = try google_api_call(arena.allocator(), req, self.model, GenerateContentResponse);
+
+        var copy = try self.allocator.create(Content);
+        copy.role = try self.allocator.dupe(u8, reply.candidates[0].content.role);
+        copy.parts = try self.allocator.dupe(Part, reply.candidates[0].content.parts);
+        for (copy.parts, 0..) |p, i| {
+            copy.parts[i].text = try self.allocator.dupe(u8, p.text);
+        }
+
+        try self.chatHistory.append(copy);
+        return copy.parts[0].text;
     }
 };
 
@@ -109,36 +124,29 @@ pub const TokensDetails = struct {
     tokenCount: usize,
 };
 
-pub fn google_api_call(allocator: std.mem.Allocator, contents: []*Content, api_key: []const u8) !*Content {
-    const payload = try mkReq(contents, allocator);
-    defer allocator.free(payload);
+pub fn google_api_call(arena: std.mem.Allocator, req: GenerateContentRequest, model: GenerativeModel, T: type) !T {
+    const payload = try json.stringifyAlloc(arena, req, .{});
 
-    const body = try http_api_call(allocator, payload, api_key);
-    defer allocator.free(body);
+    const uriStr = try std.mem.concat(arena, u8, &[_][]const u8{
+        "https://generativelanguage.googleapis.com/v1beta/models/",
+        model.name,
+        ":generateContent",
+    });
+    const uri = try std.Uri.parse(uriStr);
 
-    const t = try json.parseFromSlice(GenerateContentResponse, allocator, body, .{
+    const body = try http_api_call(arena, uri, payload, model.ai.key);
+
+    const t = try json.parseFromSlice(T, arena, body, .{
         .ignore_unknown_fields = true,
     });
-    defer t.deinit();
-
-    var copy = try allocator.create(Content);
-    copy.role = try allocator.dupe(u8, t.value.candidates[0].content.role);
-    copy.parts = try allocator.dupe(Part, t.value.candidates[0].content.parts);
-    for (copy.parts, 0..) |p, i| {
-        copy.parts[i].text = try allocator.dupe(u8, p.text);
-    }
-
-    return copy;
+    return t.value;
 }
 
-pub fn http_api_call(allocator: std.mem.Allocator, payload: []const u8, api_key: []const u8) ![]u8 {
+pub fn http_api_call(allocator: std.mem.Allocator, uri: std.Uri, payload: []const u8, api_key: []const u8) ![]u8 {
     const http_debug = false;
     var client = http.Client{ .allocator = allocator };
-    defer client.deinit();
 
-    const uri = try std.Uri.parse("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent");
     const buf = try allocator.alloc(u8, 1024 * 1024 * 4);
-    defer allocator.free(buf);
     const headers = [_]http.Header{
         .{ .name = "x-goog-api-client", .value = "genai-js/0.24.0" },
         .{ .name = "x-goog-api-key", .value = api_key },
@@ -150,7 +158,6 @@ pub fn http_api_call(allocator: std.mem.Allocator, payload: []const u8, api_key:
         },
         .extra_headers = &headers,
     });
-    defer req.deinit();
 
     req.transfer_encoding = .{ .content_length = payload.len };
 
@@ -171,16 +178,4 @@ pub fn http_api_call(allocator: std.mem.Allocator, payload: []const u8, api_key:
 
     var rdr = req.reader();
     return try rdr.readAllAlloc(allocator, 1024 * 1024 * 4);
-}
-
-pub fn mkReq(contents: []*Content, allocator: std.mem.Allocator) ![]u8 {
-    const safetySettings = [0][]u8{};
-
-    const req = GenerateContentRequest{
-        .safetySettings = &safetySettings,
-        .generationConfig = .{},
-        .contents = contents,
-    };
-    // Serialize JSON
-    return try json.stringifyAlloc(allocator, req, .{ .whitespace = .indent_2 });
 }
