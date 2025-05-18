@@ -5,7 +5,7 @@ Library for connecting to Google Gemini from Zig lang.
 ## Usage
 
 ```zig
-    const lib = @import("google-generative-ai-zig_lib");
+    const lib = @import("google-generative-ai");
 
     const genAI = lib.GoogleGenerativeAI.init(api_key);
     const model = genAI.getGenerativeModel("gemini-2.0-flash");
@@ -20,5 +20,17 @@ Library for connecting to Google Gemini from Zig lang.
         const response = try session.sendMessage(msg);
         print("{s}\n", .{response});
     }
+```
+
+## Install
+
+Fetch
+```
+$ zig fetch --save https://github.com/jpospychala/google-generative-ai-zig
+```
+
+Add dependency to build.zig (to exe in following example)
+```
+exe.root_module.addImport("google-generative-ai", b.dependency("google_generative_ai_zig", .{}).module("google-generative-ai"));
 ```
 
