@@ -26,7 +26,7 @@ Library for connecting to Google Gemini from Zig lang.
 
 Fetch
 ```
-$ zig fetch --save https://github.com/jpospychala/google-generative-ai-zig
+$ zig fetch --save git+https://github.com/jpospychala/google-generative-ai-zig.git
 ```
 
 Add dependency to build.zig (to exe in following example)
