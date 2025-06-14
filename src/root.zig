@@ -1,8 +1,8 @@
 const std = @import("std");
 const http = std.http;
 const json = std.json;
-const print = std.debug.print;
 const testing = std.testing;
+const types = @import("./types.zig");
 
 pub const GoogleGenerativeAI = struct {
     key: []const u8,
@@ -29,102 +29,57 @@ pub const GenerativeModel = struct {
         };
     }
 
-    pub fn startChat(self: @This(), allocator: std.mem.Allocator) ChatSession {
+    pub fn startChat(self: @This(), allocator: std.mem.Allocator) !ChatSession {
         return ChatSession.init(self, allocator);
     }
 };
 
 pub const ChatSession = struct {
     model: GenerativeModel,
-    allocator: std.mem.Allocator,
-    chatHistory: std.ArrayList(*Content),
+    arena: *std.heap.ArenaAllocator,
+    chatHistory: std.ArrayList(types.Content),
 
-    pub fn init(model: GenerativeModel, allocator: std.mem.Allocator) @This() {
-        return .{
+    pub fn init(model: GenerativeModel, allocator: std.mem.Allocator) !@This() {
+        const arena = try allocator.create(std.heap.ArenaAllocator);
+        arena.* = std.heap.ArenaAllocator.init(allocator);
+        return @This(){
             .model = model,
-            .allocator = allocator,
-            .chatHistory = std.ArrayList(*Content).init(allocator),
+            .arena = arena,
+            .chatHistory = std.ArrayList(types.Content).init(arena.allocator()),
         };
     }
 
-    pub fn deinit(self: @This()) void {
-        self.chatHistory.deinit();
+    pub fn deinit(self: *@This()) void {
+        const parentAlloc = self.arena.child_allocator;
+        self.arena.deinit();
+        parentAlloc.destroy(self.arena);
     }
 
-    pub fn sendMessage(self: *@This(), msg: []u8) ![]const u8 {
-        var parts = try self.allocator.alloc(Part, 1);
-        parts[0].text = msg;
-        var userContent = try self.allocator.create(Content);
-        userContent.role = try self.allocator.dupe(u8, "user");
-        userContent.parts = parts;
+    pub fn sendMessage(self: *@This(), msg: []const u8) ![]const u8 {
+        const userContent = types.Content{
+            .role = "user",
+            .parts = &[_]types.Part{types.Part{
+                .text = try self.arena.allocator().dupe(u8, msg),
+            }},
+        };
 
         try self.chatHistory.append(userContent);
 
-        const req = GenerateContentRequest{
+        const req = types.GenerateContentRequest{
             .safetySettings = &[_][]u8{},
             .generationConfig = .{},
             .contents = self.chatHistory.items,
         };
 
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        const reply = try google_api_call(arena.allocator(), req, self.model, GenerateContentResponse);
+        const replyP = try google_api_call(self.arena.allocator(), req, self.model, types.GenerateContentResponse);
+        const reply = replyP.value;
 
-        var copy = try self.allocator.create(Content);
-        copy.role = try self.allocator.dupe(u8, reply.candidates[0].content.role);
-        copy.parts = try self.allocator.dupe(Part, reply.candidates[0].content.parts);
-        for (copy.parts, 0..) |p, i| {
-            copy.parts[i].text = try self.allocator.dupe(u8, p.text);
-        }
-
-        try self.chatHistory.append(copy);
-        return copy.parts[0].text;
+        try self.chatHistory.append(reply.candidates[0].content);
+        return reply.candidates[0].content.parts[0].text;
     }
 };
 
-pub const GenerateContentRequest = struct {
-    safetySettings: [][]u8,
-    generationConfig: GenerationConfig,
-    contents: []*Content,
-};
-
-pub const Part = struct {
-    text: []u8,
-};
-
-pub const Content = struct {
-    role: []u8,
-    parts: []Part,
-};
-
-pub const GenerationConfig = struct {};
-
-pub const GenerateContentResponse = struct {
-    candidates: []Candidate,
-    usageMetadata: UsageMetadata,
-    modelVersion: []u8,
-};
-
-pub const Candidate = struct {
-    content: Content,
-    finishReason: []u8,
-    avgLogprobs: f32,
-};
-
-pub const UsageMetadata = struct {
-    promptTokenCount: usize,
-    candidatesTokenCount: usize,
-    totalTokenCount: usize,
-    promptTokensDetails: []TokensDetails,
-    candidatesTokensDetails: []TokensDetails,
-};
-
-pub const TokensDetails = struct {
-    modality: []u8,
-    tokenCount: usize,
-};
-
-pub fn google_api_call(arena: std.mem.Allocator, req: GenerateContentRequest, model: GenerativeModel, T: type) !T {
+pub fn google_api_call(arena: std.mem.Allocator, req: types.GenerateContentRequest, model: GenerativeModel, T: type) !json.Parsed(T) {
     const payload = try json.stringifyAlloc(arena, req, .{});
 
     const uriStr = try std.mem.concat(arena, u8, &[_][]const u8{
@@ -136,17 +91,16 @@ pub fn google_api_call(arena: std.mem.Allocator, req: GenerateContentRequest, mo
 
     const body = try http_api_call(arena, uri, payload, model.ai.key);
 
-    const t = try json.parseFromSlice(T, arena, body, .{
+    return try json.parseFromSlice(T, arena, body, .{
         .ignore_unknown_fields = true,
     });
-    return t.value;
 }
 
-pub fn http_api_call(allocator: std.mem.Allocator, uri: std.Uri, payload: []const u8, api_key: []const u8) ![]u8 {
+pub fn http_api_call(arena: std.mem.Allocator, uri: std.Uri, payload: []const u8, api_key: []const u8) ![]u8 {
     const http_debug = false;
-    var client = http.Client{ .allocator = allocator };
+    var client = http.Client{ .allocator = arena };
 
-    const buf = try allocator.alloc(u8, 1024 * 1024 * 4);
+    const buf = try arena.alloc(u8, 1024 * 1024 * 4);
     const headers = [_]http.Header{
         .{ .name = "x-goog-api-client", .value = "genai-js/0.24.0" },
         .{ .name = "x-goog-api-key", .value = api_key },
@@ -177,5 +131,18 @@ pub fn http_api_call(allocator: std.mem.Allocator, uri: std.Uri, payload: []cons
     try std.testing.expectEqual(req.response.status, .ok);
 
     var rdr = req.reader();
-    return try rdr.readAllAlloc(allocator, 1024 * 1024 * 4);
+    return try rdr.readAllAlloc(arena, 1024 * 1024 * 4);
+}
+
+test "Session.sendMessage" {
+    const api_key = try std.process.getEnvVarOwned(std.testing.allocator, "API_KEY");
+    defer std.testing.allocator.free(api_key);
+    const genAI = GoogleGenerativeAI.init(api_key);
+    const model = genAI.getGenerativeModel("gemini-2.0-flash");
+
+    var session = try model.startChat(std.testing.allocator);
+    defer session.deinit();
+
+    const resp = try session.sendMessage("1+1");
+    try std.testing.expectEqualSlices(u8, "2\n", resp);
 }
