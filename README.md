@@ -8,7 +8,7 @@ Library for connecting to Google Gemini from Zig lang.
     const lib = @import("google-generative-ai");
 
     const genAI = lib.GoogleGenerativeAI.init(api_key);
-    const model = genAI.getGenerativeModel("gemini-2.0-flash");
+    const model = genAI.getGenerativeModel("gemini-2.5-flash");
 
     var session = model.startChat(allocator);
 
