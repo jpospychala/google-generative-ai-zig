@@ -45,7 +45,7 @@ pub const ChatSession = struct {
         return @This(){
             .model = model,
             .arena = arena,
-            .chatHistory = std.ArrayList(types.Content).init(arena.allocator()),
+            .chatHistory = try std.ArrayList(types.Content).initCapacity(arena.allocator(), 10),
         };
     }
 
@@ -63,7 +63,7 @@ pub const ChatSession = struct {
             }},
         };
 
-        try self.chatHistory.append(userContent);
+        try self.chatHistory.append(self.arena.allocator(), userContent);
 
         const req = types.GenerateContentRequest{
             .safetySettings = &[_][]u8{},
@@ -74,13 +74,18 @@ pub const ChatSession = struct {
         const replyP = try google_api_call(self.arena.allocator(), req, self.model, types.GenerateContentResponse);
         const reply = replyP.value;
 
-        try self.chatHistory.append(reply.candidates[0].content);
+        try self.chatHistory.append(self.arena.allocator(), reply.candidates[0].content);
         return reply.candidates[0].content.parts[0].text;
     }
 };
 
 pub fn google_api_call(arena: std.mem.Allocator, req: types.GenerateContentRequest, model: GenerativeModel, T: type) !json.Parsed(T) {
-    const payload = try json.stringifyAlloc(arena, req, .{});
+    var out: std.io.Writer.Allocating = .init(arena);
+    const writer = &out.writer;
+    defer out.deinit();
+
+    try json.Stringify.value(req, .{}, writer);
+    const payload = out.written();
 
     const uriStr = try std.mem.concat(arena, u8, &[_][]const u8{
         "https://generativelanguage.googleapis.com/v1beta/models/",
@@ -96,53 +101,49 @@ pub fn google_api_call(arena: std.mem.Allocator, req: types.GenerateContentReque
     });
 }
 
-pub fn http_api_call(arena: std.mem.Allocator, uri: std.Uri, payload: []const u8, api_key: []const u8) ![]u8 {
-    const http_debug = false;
+pub fn http_api_call(arena: std.mem.Allocator, uri: std.Uri, payload: []u8, api_key: []const u8) ![]u8 {
+    //const http_debug = false;
     var client = http.Client{ .allocator = arena };
 
-    const buf = try arena.alloc(u8, 1024 * 1024 * 4);
+    // const buf = try arena.alloc(u8, 1024 * 1024 * 4);
     const headers = [_]http.Header{
         .{ .name = "x-goog-api-client", .value = "genai-js/0.24.0" },
         .{ .name = "x-goog-api-key", .value = api_key },
     };
-    var req = try client.open(.POST, uri, .{
-        .server_header_buffer = buf,
+
+    var writer = std.Io.Writer.Allocating.init(arena);
+    const req = try client.fetch(.{
+        .method = .POST,
+        .location = .{ .uri = uri },
         .headers = .{
             .content_type = .{ .override = "application/json" },
         },
         .extra_headers = &headers,
+        .payload = payload,
+        .response_writer = &writer.writer,
     });
 
-    req.transfer_encoding = .{ .content_length = payload.len };
+    // if (http_debug) {
+    //     var iter = response.head.iterateHeaders();
+    //     while (iter.next()) |header| {
+    //         std.debug.print("Name:{s}, Value:{s}\n", .{ header.name, header.value });
+    //     }
+    // }
 
-    try req.send();
-    var wtr = req.writer();
-    try wtr.writeAll(payload);
-    try req.finish();
-    try req.wait();
+    try std.testing.expectEqual(.ok, req.status);
 
-    if (http_debug) {
-        var iter = req.response.iterateHeaders();
-        while (iter.next()) |header| {
-            std.debug.print("Name:{s}, Value:{s}\n", .{ header.name, header.value });
-        }
-    }
-
-    try std.testing.expectEqual(req.response.status, .ok);
-
-    var rdr = req.reader();
-    return try rdr.readAllAlloc(arena, 1024 * 1024 * 4);
+    return writer.written();
 }
 
 test "Session.sendMessage" {
     const api_key = try std.process.getEnvVarOwned(std.testing.allocator, "API_KEY");
     defer std.testing.allocator.free(api_key);
     const genAI = GoogleGenerativeAI.init(api_key);
-    const model = genAI.getGenerativeModel("gemini-2.0-flash");
+    const model = genAI.getGenerativeModel("gemini-2.5-flash");
 
     var session = try model.startChat(std.testing.allocator);
     defer session.deinit();
 
     const resp = try session.sendMessage("1+1");
-    try std.testing.expectEqualSlices(u8, "2\n", resp);
+    try std.testing.expectEqualSlices(u8, "2", resp);
 }

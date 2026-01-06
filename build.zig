@@ -19,9 +19,10 @@ pub fn build(b: *std.Build) void {
 
     exe_mod.addImport("google-generative-ai-zig_lib", lib_mod);
 
-    const lib = b.addStaticLibrary(.{
+    const lib = b.addLibrary(.{
         .name = "google-generative-ai-zig",
         .root_module = lib_mod,
+	.linkage = .static,
     });
 
     b.installArtifact(lib);

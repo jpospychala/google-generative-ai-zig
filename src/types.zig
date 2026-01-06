@@ -4,13 +4,13 @@ pub const GenerateContentRequest = struct {
     contents: []Content,
 };
 
-pub const Part = struct {
-    text: []u8,
-};
-
 pub const Content = struct {
     role: []const u8,
     parts: []const Part,
+};
+
+pub const Part = struct {
+    text: []u8,
 };
 
 pub const GenerationConfig = struct {};
@@ -24,7 +24,6 @@ pub const GenerateContentResponse = struct {
 pub const Candidate = struct {
     content: Content,
     finishReason: []u8,
-    avgLogprobs: f32,
 };
 
 pub const UsageMetadata = struct {
@@ -32,7 +31,6 @@ pub const UsageMetadata = struct {
     candidatesTokenCount: usize,
     totalTokenCount: usize,
     promptTokensDetails: []TokensDetails,
-    candidatesTokensDetails: []TokensDetails,
 };
 
 pub const TokensDetails = struct {

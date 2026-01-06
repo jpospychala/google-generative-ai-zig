@@ -2,7 +2,7 @@
     .name = .google_generative_ai_zig,
     .fingerprint = 0xed5290f2bb3c9efa,
     .version = "0.0.0",
-    .minimum_zig_version = "0.14.0",
+    .minimum_zig_version = "0.15.0",
     .dependencies = .{},
     .paths = .{
         "build.zig",

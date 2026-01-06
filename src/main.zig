@@ -16,16 +16,16 @@ pub fn main() !void {
     defer allocator.free(api_key);
 
     const genAI = lib.GoogleGenerativeAI.init(api_key);
-    const model = genAI.getGenerativeModel("gemini-2.0-flash");
+    const model = genAI.getGenerativeModel("gemini-2.5-flash");
 
-    var session = model.startChat(allocator);
+    var session = try model.startChat(allocator);
     defer session.deinit();
 
-    const stdin = std.io.getStdIn().reader();
-    const stdout = std.io.getStdOut().writer();
+    const stdin = std.fs.File.stdin().deprecatedReader();
+    const stdout = std.fs.File.stdout().deprecatedWriter();
 
     while (true) {
-        try stdout.writeAll("Enter a line of text: ");
+        try stdout.writeAll("> ");
 
         const msg = try stdin.readUntilDelimiterAlloc(allocator, '\n', 1024);
 
